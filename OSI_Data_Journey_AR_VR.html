@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Journey of a Data Packet</title>
+<style>
+:root{--bg:#02050c;--fg:#d8f4ff;--c:#38e1ff;--p:#a56bff;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;overflow:hidden}
+canvas{width:100%;height:100%;display:block;outline:none;touch-action:none}
+#ui{position:fixed;inset:0;pointer-events:none}
+.box{pointer-events:auto;background:rgba(4,12,28,.88);border:1px solid var(--c);border-radius:12px;padding:14px;box-shadow:0 0 24px #38e1ff44;max-width:min(520px,92vw)}
+.c{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center}
+.b{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+h1{margin:0 0 8px;font-size:26px;letter-spacing:.08em;color:var(--c)}
+button{font:inherit;color:var(--fg);background:#0b2a44;border:1px solid var(--c);border-radius:8px;padding:8px 14px;margin:4px;cursor:pointer}
+button:hover,button.on{background:var(--c);color:#02050c}
+#xrbar{position:fixed;right:12px;top:48px;z-index:10;pointer-events:auto;max-width:min(300px,90vw);text-align:right}
+#xrstatus{display:none;margin-top:6px;font-size:12px;text-align:left}
+@media(max-width:600px){#xrbar{top:44px;right:6px}#xrbar button{padding:7px 10px;font-size:13px}}
+input{font:inherit;width:100%;box-sizing:border-box;padding:8px;background:#06121f;color:var(--fg);border:1px solid var(--p);border-radius:6px;margin:4px 0}
+#prog{position:absolute;top:calc(8px + env(safe-area-inset-top,0px));left:0;right:0;display:flex;justify-content:center;gap:4px;flex-wrap:wrap;font-size:11px}
+#prog span{padding:3px 7px;border:1px solid #2a4a66;border-radius:10px;opacity:.5}
+#prog .cur{border-color:var(--c);color:var(--c);opacity:1;box-shadow:0 0 8px var(--c)}
+#prog .done{border-color:#4f8;color:#4f8;opacity:1}
+.mv{position:absolute;bottom:calc(76px + env(safe-area-inset-bottom,0px));left:12px;display:none;pointer-events:auto;touch-action:none}
+.mv button{width:54px;height:48px;padding:4px;margin:2px;font-size:20px;background:rgba(8,38,62,.9)}
+.mv .mid{display:flex;justify-content:center}
+#full{position:absolute;right:12px;bottom:calc(14px + env(safe-area-inset-bottom,0px));pointer-events:auto}
+@media(pointer:coarse){.mv{display:block}#act{bottom:calc(76px + env(safe-area-inset-bottom,0px))!important;left:auto;right:12px;transform:none}}
+small{opacity:.7}
+</style></head><body>
+<canvas id="cv"></canvas>
+<div id="ui">
+ <div id="prog"></div>
+ <div id="xrbar"><button id="vrbtn" style="display:none">ENTER VR</button><button id="arbtn" style="display:none">TRY ROOM AR</button><div id="xrstatus" class="box"></div></div>
+ <div id="main" class="box c"><h1>THE JOURNEY OF A DATA PACKET</h1><p>“Every message you send travels through an invisible world.”<br>“Today, you won’t just learn how data travels. You will become the data.”</p><button id="start">START JOURNEY</button><p><small>WASD / drag to look / E to interact · touch: ▲▼ buttons</small></p></div>
+ <div id="hint" class="box b" style="display:none"></div>
+ <div id="panel" class="box c" style="display:none"></div>
+ <div class="mv" aria-label="Touch movement controls">
+  <div class="mid"><button id="f" aria-label="Move forward">▲</button></div>
+  <div class="mid"><button id="l" aria-label="Move left">◀</button><button id="k" aria-label="Move backward">▼</button><button id="r" aria-label="Move right">▶</button></div>
+ </div>
+ <button id="act" class="b" style="display:none;bottom:70px">INTERACT (E)</button>
+ <button id="full">FULL SCREEN</button>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babylonjs/7.0.0/babylon.min.js"></script>
+<script>
+const B=BABYLON,$=i=>document.getElementById(i);
+const LAYERS=["Application","Presentation","Session","Transport","Network","Data Link","Physical"];
+let stage="menu",msg="Tum kaisi ho?",solved=false,mvF=0,mvS=0,tab=0;
+const eng=new B.Engine($("cv"),true),sc=new B.Scene(eng);
+sc.clearColor=new B.Color4(.01,.02,.05,1);sc.fogMode=B.Scene.FOGMODE_EXP2;sc.fogDensity=.012;sc.fogColor=new B.Color3(.01,.02,.05);
+const cam=new B.UniversalCamera("c",new B.Vector3(0,1.7,-30),sc);cam.setTarget(new B.Vector3(0,1.7,0));cam.attachControl($("cv"),true);
+// ---- WEBXR: VR + PHONE AR ----
+// VR needs a compatible headset. Phone AR can work on supported Android/Chrome + ARCore.
+let xrExperience=null,xrReady=false,xrInSession=false,xrMode="",lastXRStage="";
+let arHitTest=null,arRoot=null,arLocked=false,arSavedVisibility=[],arOldClear=null,arLastResult=null;
+const vrBtn=$("vrbtn"),arBtn=$("arbtn"),xrStatus=$("xrstatus");
+function xrMessage(t,show=true){xrStatus.textContent=t;xrStatus.style.display=show?"block":"none"}
+function makeARShowcase(){
+  if(arRoot)return;
+  arRoot=new B.TransformNode("AR_OSI_Lab",sc);arRoot.rotationQuaternion=B.Quaternion.Identity();arRoot.scaling.setAll(.16);arRoot.setEnabled(false);
+  const mm=(name,color,glow)=>{const m=new B.StandardMaterial(name,sc);m.diffuseColor=B.Color3.FromHexString(color);m.emissiveColor=B.Color3.FromHexString(glow||color);return m};
+  const base=B.MeshBuilder.CreateCylinder("AR_table",{diameter:8,height:.22,tessellation:48},sc);base.parent=arRoot;base.position.y=.12;base.material=mm("AR_base_mat","#101b30","#123b55");
+  const rim=B.MeshBuilder.CreateTorus("AR_rim",{diameter:7.7,thickness:.09,tessellation:48},sc);rim.parent=arRoot;rim.position.y=.28;rim.material=mm("AR_rim_mat","#38e1ff","#38e1ff");
+  const title=holo("THE OSI DATA JOURNEY",5.8,.7,B.Vector3.Zero(),"#38e1ff");title.parent=arRoot;title.position.set(0,5.2,0);title.isPickable=false;
+  const names=["APPLICATION","PRESENTATION","SESSION","TRANSPORT","NETWORK","DATA LINK","PHYSICAL"];
+  const colors=["#38e1ff","#a56bff","#ffb347","#39d98a","#f36b8a","#4db6ff","#ffe066"];
+  names.forEach((n,i)=>{
+    const y=.55+i*.52;
+    const disk=B.MeshBuilder.CreateCylinder("AR_layer_"+i,{diameter:4.9-i*.22,height:.38,tessellation:40},sc);disk.parent=arRoot;disk.position.set(0,y,0);
+    disk.material=mm("AR_layer_mat_"+i,colors[i],colors[i]);disk.metadata={arLayer:i};
+    const label=holo((7-i)+" · "+n,3.8,.42,B.Vector3.Zero(),colors[i],{arLayer:i});label.parent=arRoot;label.position.set(0,y+.24,-2.35);label.isPickable=true;
+  });
+  const packet=B.MeshBuilder.CreateSphere("AR_packet",{diameter:.85,segments:20},sc);packet.parent=arRoot;packet.position.set(0,5.25,0);packet.material=mm("AR_packet_mat","#ffffff","#38e1ff");
+  const note=holo("TAP A LAYER TO EXPLORE",4.5,.45,B.Vector3.Zero(),"#ffffff");note.parent=arRoot;note.position.set(0,6.2,0);note.isPickable=false;
+}
+function isInsideAR(node){while(node){if(node===arRoot)return true;node=node.parent}return false}
+function prepareARScene(){
+  arSavedVisibility=[];
+  sc.meshes.forEach(m=>{if(!isInsideAR(m)){arSavedVisibility.push([m,m.isVisible]);m.isVisible=false}});
+  arOldClear=sc.clearColor.clone();sc.clearColor=new B.Color4(0,0,0,0);
+  arRoot.setEnabled(true);arLocked=false;arLastResult=null;
+  xrMessage("AR camera active. Slowly point at a textured floor or table. When the marker appears, tap the screen to place the OSI model.");
+}
+function restoreARScene(){
+  arSavedVisibility.forEach(([m,v])=>{if(!m.isDisposed())m.isVisible=v});arSavedVisibility=[];
+  if(arOldClear)sc.clearColor=arOldClear;arOldClear=null;
+  if(arRoot)arRoot.setEnabled(false);arLocked=false;arLastResult=null;
+}
+async function setupWebXR(){
+  if(!window.isSecureContext){xrMessage("AR/VR needs HTTPS (or localhost for development). Desktop 3D still works.");return}
+  if(!navigator.xr||!navigator.xr.isSessionSupported){xrMessage("This browser does not expose WebXR. Normal 3D mode is ready.");return}
+  try{
+    const [vrOK,arOK]=await Promise.all([navigator.xr.isSessionSupported("immersive-vr").catch(()=>false),navigator.xr.isSessionSupported("immersive-ar").catch(()=>false)]);
+    if(!vrOK&&!arOK){xrMessage("No immersive XR mode detected here. Try Android Chrome with ARCore for phone AR, or a compatible VR headset.");return}
+    makeARShowcase();
+    xrExperience=await sc.createDefaultXRExperienceAsync({disableTeleportation:true,uiOptions:{sessionMode:arOK?"immersive-ar":"immersive-vr",referenceSpaceType:arOK?"local":"local-floor"},optionalFeatures:["hit-test"]});
+    if(!xrExperience||!xrExperience.baseExperience){xrMessage("WebXR could not initialize. Normal 3D mode remains available.");return}
+    xrReady=true;
+    if(vrOK)vrBtn.style.display="inline-block";
+    if(arOK)arBtn.style.display="inline-block";
+    if(arOK){
+      try{arHitTest=xrExperience.baseExperience.featuresManager.enableFeature("xr-hit-test","latest");
+        arHitTest.onHitTestResultObservable.add(results=>{
+          if(!xrInSession||xrMode!=="ar"||arLocked||!results.length)return;
+          arLastResult=results[0];
+          const sca=new B.Vector3(),rot=B.Quaternion.Identity(),pos=new B.Vector3();
+          arLastResult.transformationMatrix.decompose(sca,rot,pos);
+          arRoot.position.copyFrom(pos);arRoot.rotationQuaternion.copyFrom(rot);arRoot.scaling.setAll(.16);arRoot.setEnabled(true);
+          xrMessage("Surface found. Tap once on the camera view to place the OSI lab here.");
+        });
+      }catch(e){console.warn("AR hit test setup:",e);arHitTest=null;}
+    }
+    xrExperience.baseExperience.onStateChangedObservable.add(state=>{
+      xrInSession=state===B.WebXRState.IN_XR;
+      if(xrInSession){
+        lastXRStage=stage;
+        if(xrMode==="ar")prepareARScene();
+        else xrMessage("VR active: turn your head to look around. A compatible headset is required.");
+      }else{
+        if(xrMode==="ar")restoreARScene();
+        xrMode="";lastXRStage="";vrBtn.textContent="ENTER VR";arBtn.textContent="TRY ROOM AR";
+        xrMessage("XR session ended. Back to normal 3D mode.");
+      }
+    });
+    xrMessage((arOK?"Phone AR available":"Phone AR not detected")+(vrOK?" · VR available":" · VR headset not detected")+". Choose a mode when ready.");
+  }catch(err){console.warn("WebXR initialization:",err);xrMessage("WebXR setup issue: "+(err&&err.message?err.message:"unsupported device/browser")+". Normal 3D mode is still available.");}
+}
+async function enterXR(mode){
+  if(!xrReady||!xrExperience)return;
+  try{
+    if(xrInSession){await xrExperience.baseExperience.exitXRAsync();return}
+    xrMode=mode;
+    await xrExperience.baseExperience.enterXRAsync(mode==="ar"?"immersive-ar":"immersive-vr",mode==="ar"?"local":"local-floor");
+  }catch(err){xrMode="";console.warn("XR session:",err);xrMessage((mode==="ar"?"Could not start AR. Check Android Chrome, ARCore and camera permission. ":"Could not enter VR. Check headset and browser. ")+(err&&err.message?err.message:""));}
+}
+vrBtn.onclick=()=>enterXR("vr");
+arBtn.onclick=()=>enterXR("ar");
+// First tap after the AR surface marker appears fixes the miniature in the real room.
+sc.onPointerObservable.add(pi=>{
+  if(!xrInSession||xrMode!=="ar"||arLocked||pi.type!==B.PointerEventTypes.POINTERTAP||!arLastResult)return;
+  arLocked=true;xrMessage("OSI lab placed in your room. Walk around it carefully and tap a coloured layer to inspect it.");
+});
+sc.onPointerObservable.add(pi=>{
+  if(!xrInSession||xrMode!=="ar"||pi.type!==B.PointerEventTypes.POINTERTAP)return;
+  const m=pi.pickInfo&&pi.pickInfo.pickedMesh;
+  if(m&&m.metadata&&m.metadata.arLayer!==undefined){const i=m.metadata.arLayer;xrMessage("OSI Layer "+(7-i)+" — "+LAYERS[i]+". This is a tabletop learning model; return to the game to complete the full journey.");}
+});
+setupWebXR();
+cam.keysUp=[87];cam.keysDown=[83];cam.keysLeft=[65];cam.keysRight=[68];cam.speed=.28;cam.angularSensibility=3500;cam.minZ=.1;cam.inertia=.7;
+new B.HemisphericLight("h",new B.Vector3(0,1,0),sc).intensity=.35;
+new B.GlowLayer("g",sc).intensity=.8;
+const mat=(c,e)=>{const m=new B.StandardMaterial("m",sc);m.diffuseColor=B.Color3.FromHexString(c);m.emissiveColor=B.Color3.FromHexString(e||"#000000");return m};
+// tiny sound helper
+let ac;const beep=(f,d=.15)=>{try{ac=ac||new AudioContext();const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=f;g.gain.value=.05;o.connect(g);g.connect(ac.destination);o.start();g.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+d);o.stop(ac.currentTime+d)}catch(e){}};
+// text textures
+function holo(text,w,h,pos,col="#38e1ff",meta){const px=256,t=new B.DynamicTexture("t",{width:px*w,height:px*h},sc,true),x=t.getContext();x.fillStyle="rgba(4,20,40,.85)";x.fillRect(0,0,px*w,px*h);x.strokeStyle=col;x.lineWidth=6;x.strokeRect(3,3,px*w-6,px*h-6);x.fillStyle=col;x.font="bold "+(px*h*.3)+"px monospace";x.textAlign="center";x.fillText(text,px*w/2,px*h*.6);t.update();
+ const p=B.MeshBuilder.CreatePlane("p",{width:w,height:h},sc),m=new B.StandardMaterial("pm",sc);m.emissiveTexture=t;m.opacityTexture=t;m.disableLighting=true;p.material=m;p.position=pos;if(meta)p.metadata=meta;return p}
+function glyph(c){const t=new B.DynamicTexture("g",64,sc,true),x=t.getContext();x.font="bold 48px monospace";x.fillStyle="#7ff";x.textAlign="center";x.fillText(c,32,50);t.update();return t}
+function parts(ch,emitter,n,box,col){const p=new B.ParticleSystem("p",n*3,sc);p.particleTexture=glyph(ch);p.emitter=emitter;p.minEmitBox=new B.Vector3(-box,-box,-box);p.maxEmitBox=new B.Vector3(box,box,box);p.color1=B.Color4.FromHexString(col+"ff");p.color2=new B.Color4(.6,.4,1,1);p.colorDead=new B.Color4(0,0,0,0);p.minSize=.08;p.maxSize=.25;p.minLifeTime=1.5;p.maxLifeTime=4;p.emitRate=n;p.gravity=new B.Vector3(0,.4,0);p.direction1=new B.Vector3(-.5,.5,-.5);p.direction2=new B.Vector3(.5,1.5,.5);p.blendMode=B.ParticleSystem.BLENDMODE_ADD;p.start();return p}
+// ---- CAVE ----
+const rock=mat("#141a26"),cry=mat("#0a3a66","#1aa0ff");
+const g=B.MeshBuilder.CreateGround("gr",{width:50,height:140},sc);g.position.z=40;g.material=rock;
+[[-14,1],[14,1]].forEach(([x])=>{const w=B.MeshBuilder.CreateBox("w",{width:4,height:24,depth:140},sc);w.position.set(x,10,40);w.material=rock});
+const roof=B.MeshBuilder.CreateBox("r",{width:40,height:3,depth:140},sc);roof.position.set(0,16,40);roof.material=rock;
+[-7,7].forEach(x=>{const a=B.MeshBuilder.CreateBox("a",{width:5,height:14,depth:5},sc);a.position.set(x,7,0);a.material=rock});
+const lin=B.MeshBuilder.CreateBox("l",{width:20,height:4,depth:5},sc);lin.position.set(0,13,0);lin.material=rock;
+for(let i=0;i<46;i++){const c=B.MeshBuilder.CreateCylinder("cr",{height:1+Math.random()*3,diameterTop:0,diameterBottom:.6+Math.random()*.6,tessellation:5},sc);c.position.set((Math.random()<.5?-1:1)*(7+Math.random()*5),.8,-20+Math.random()*80);c.rotation.z=(Math.random()-.5)*.5;c.material=cry}
+const pl=new B.PointLight("pl",new B.Vector3(0,4,14),sc);pl.diffuse=new B.Color3(.2,.7,1);pl.intensity=1.2;
+const portal=B.MeshBuilder.CreateTorus("po",{diameter:8,thickness:.5},sc);portal.position.set(0,5,60);portal.rotation.x=Math.PI/2;portal.rotation.x=0;portal.material=mat("#222","#a56bff");
+parts("·",new B.Vector3(0,4,10),30,10,"#38e1ff").particleTexture=glyph("•");
+const term=B.MeshBuilder.CreateBox("term",{width:2.4,height:1.2,depth:.8},sc);term.position.set(0,.6,16);term.material=mat("#0b1b2e","#0a5577");
+holo("TERMINAL",2.2,.9,new B.Vector3(0,1.9,15.5));
+// human
+const hum=new B.TransformNode("hum",sc);hum.position.set(0,0,12.5);hum.setEnabled(false);const hm=mat("#e8b890","#331100");
+[["body",B.MeshBuilder.CreateCylinder("b",{height:1.0,diameter:.55},sc),1.05],["head",B.MeshBuilder.CreateSphere("h",{diameter:.4},sc),1.75],["legs",B.MeshBuilder.CreateCylinder("l",{height:.8,diameter:.4},sc),.4]].forEach(([n,m,y])=>{m.parent=hum;m.position.y=y;m.material=hm});
+// data entity (attached to camera later)
+const ent=B.MeshBuilder.CreateSphere("ent",{diameter:.3},sc);ent.material=mat("#003","#38e1ff");ent.setEnabled(false);ent.parent=cam;ent.position.set(0,-.45,1.2);
+// ---- LAYER 7 ROOM ----
+const OX=300,room=[];
+(function(){const f=B.MeshBuilder.CreateGround("f",{width:30,height:36},sc);f.position.set(OX,0,5);f.material=mat("#0a1420","#06223a");
+const w=B.MeshBuilder.CreateBox("w",{width:30,height:12,depth:1},sc);w.position.set(OX,6,22);w.material=mat("#0a1830","#102060");
+holo("“"+msg+"”",5,1.4,new B.Vector3(OX,4.5,21.3),"#a56bff").name="screen";
+const defs=[["HTTP",-9,false],["HTTPS",-3,true],["DNS",3,false],["SMTP",9,false]];
+defs.forEach(([n,x,ok])=>{const p=B.MeshBuilder.CreateCylinder("pil",{height:3,diameter:1.4},sc);p.position.set(OX+x,1.5,12);p.material=mat("#101c30","#0c4a70");p.metadata={proto:n,ok};holo(n,1.8,.7,new B.Vector3(OX+x,3.7,12),"#38e1ff",{proto:n,ok})});})();
+// ---- UI helpers ----
+const P={done:[],skip:[],cur:-1};function prog(){$("prog").innerHTML=LAYERS.map((n,i)=>{const c=P.done.includes(i)?"done":P.cur==i?"cur":"";return `<span class="${c}">${n}${P.skip.includes(i)?" (soon)":""}</span>`}).join("→")}
+prog();
+const hint=t=>{$("hint").style.display=t?"block":"none";$("hint").innerHTML=t||""};
+const panel=h=>{$("panel").style.display=h?"block":"none";$("panel").innerHTML=h||""};
+const fade=(fn)=>{const d=document.createElement("div");d.style.cssText="position:fixed;inset:0;background:#000;opacity:0;transition:opacity .8s;z-index:5";document.body.appendChild(d);requestAnimationFrame(()=>d.style.opacity=1);setTimeout(()=>{fn();d.style.opacity=0;setTimeout(()=>d.remove(),900)},900)};
+// ---- FLOW ----
+$("start").onclick=()=>{beep(440);$("main").style.display="none";stage="cave";hint("Walk into the cave (WASD). Find the glowing terminal and press <b>E</b>.")};
+function act(){if(stage=="cave"&&near(term,5)){stage="terminal";hint();beep(660);
+ panel(`<h1>COMMUNICATION TERMINAL</h1><p>Sender: <b>Mumbai, India</b><br>Receiver: <b>Delhi, India</b></p><input id="mi" value="${msg}" maxlength="40"><br><button id="send">SEND</button>`);
+ $("send").onclick=()=>{msg=$("mi").value.trim()||"Tum kaisi ho?";panel();transform()}}}
+const near=(m,d)=>B.Vector3.Distance(cam.position,m.position)<d;
+$("act").onclick=act;addEventListener("keydown",e=>{if(e.key=="e"||e.key=="E")act()});
+// Touch movement pad: hold a direction to walk; drag on the scene to look around.
+const hold=(id,fn)=>{const el=$(id);el.addEventListener("pointerdown",e=>{e.preventDefault();el.setPointerCapture(e.pointerId);fn(1)});const stop=()=>fn(0);el.addEventListener("pointerup",stop);el.addEventListener("pointercancel",stop);el.addEventListener("lostpointercapture",stop)};
+hold("f",v=>mvF=v);hold("k",v=>mvF=-v);hold("l",v=>mvS=-v);hold("r",v=>mvS=v);
+addEventListener("blur",()=>{mvF=0;mvS=0});
+$("full").onclick=async()=>{try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();else await document.exitFullscreen()}catch(e){hint("Fullscreen is not available in this browser. You can continue in the normal window.")}};
+function transform(){stage="trans";const sv=cam.position.clone();hum.setEnabled(true);cam.detachControl();cam.position.set(4,1.6,9);cam.setTarget(new B.Vector3(0,1.1,12.5));
+ setTimeout(()=>{hm.emissiveColor=new B.Color3(.2,.8,1);beep(300,.6)},800);
+ setTimeout(()=>{const e=hum.getChildMeshes()[0];[0,1].forEach(i=>{});parts("0",hum.getChildMeshes()[0],160,.4,"#38e1ff");parts("1",hum.getChildMeshes()[1],160,.4,"#a56bff");beep(500,.8);
+  let s=1;const iv=setInterval(()=>{s-=.04;hum.scaling.setAll(Math.max(s,0));if(s<=0){clearInterval(iv);hum.setEnabled(false)}},60)},1800);
+ setTimeout(()=>{panel(`<h1>You are no longer a human.</h1><p style="font-size:20px">You are <b>DATA</b>.</p><button id="go">ENTER THE DIGITAL CAVE</button>`);$("go").onclick=()=>{panel();fade(()=>{ent.setEnabled(true);cam.position.set(OX,1.7,-10);cam.setTarget(new B.Vector3(OX,2.5,12));cam.attachControl($("cv"),true);stage="l7";P.cur=0;prog();layer7()})}},5000)}
+function layer7(){hint("LAYER 7 · APPLICATION — a futuristic control room. Your message is on the holo screen. <button id='info'>EXPLAIN</button><br>Scenario: your chat app must send this message across the Internet <b>securely</b>. Click the correct protocol pillar.")
+ $("info").onclick=()=>explain()}
+const EX=[["The Application Layer gives apps access to network services. WhatsApp is the app; Layer 7 is the set of protocols it speaks. Your message becomes <i>application data</i> ready to be sent.","Protocols: HTTP (web), HTTPS (HTTP over TLS, protected), DNS (name→IP lookup), SMTP (email delivery). Layer 7 is a service interface, not the application itself. <small>(Illustrative simplification: TLS itself is often discussed at layers 5–6.)</small>","Browsers use HTTPS, phones look up names with DNS, mail servers relay with SMTP, chat apps usually ride on HTTPS."]];
+function explain(){const e=EX[curL];const t=["Beginner","Technical","Real-world"];panel(`<h1>${["LAYER 7","LAYER 4","LAYER 6","LAYER 5","LAYER 3","LAYER 2","LAYER 1","RECEIVER"][curL]}</h1>${t.map((n,i)=>`<button class="${i==tab?"on":""}" data-t="${i}">${n}</button>`).join("")}<p>${e[tab]}</p><button id="x">CLOSE</button>`);
+ panel.dataset;document.querySelectorAll("[data-t]").forEach(b=>b.onclick=()=>{tab=+b.dataset.t;explain()});$("x").onclick=()=>panel()}
+sc.onPointerObservable.add(pi=>{if(pi.type!=B.PointerEventTypes.POINTERTAP||stage!="l7"||solved)return;const m=pi.pickInfo.pickedMesh;if(!m||!m.metadata)return;
+ if(m.metadata.ok){solved=true;beep(880,.5);hint();quiz()}else{beep(180,.4);hint(`✗ <b>${m.metadata.proto}</b> is a real Application Layer protocol, but it doesn’t protect your message in transit. Try again. <button id='info'>EXPLAIN</button>`);$("info").onclick=explain}});
+function quiz(){panel(`<h1>✓ HTTPS selected</h1><p>HTTPS = HTTP + TLS encryption, still an Application Layer protocol.</p><h3>Knowledge check</h3><p>Is the Application Layer the app itself (like WhatsApp)?</p><button id="q1">Yes</button><button id="q2">No — it provides network services to apps</button><p id="fb"></p>`);
+ $("q1").onclick=()=>{$("fb").textContent="Not quite — the app uses Layer 7 services.";beep(180)};
+ $("q2").onclick=()=>{beep(880);panel(`<h1>LAYER 7 COMPLETE ✓</h1><p>Next: Layer 6, Presentation.</p><button id="cj">CONTINUE JOURNEY</button>`);$("cj").onclick=()=>{P.done=[0];panel();fade(layer6);return;panel(`<h1>VERTICAL SLICE COMPLETE</h1><p>You travelled from the cave, became data, and finished Layer 7.</p><p><small>Next: continue through Presentation, Session, Transport, Network, Data Link, Physical and receiver decapsulation.</small></p>`)}}}
+// ---- LAYER 4: TRANSPORT ----
+let curL=0,segs=[],nxt=0;
+EX.push(["The Transport Layer chops a big message into small numbered pieces and makes sure they arrive and get put back in order. Like posting a long letter as numbered postcards.","TCP creates <b>segments</b>: a header (source port, destination port, sequence number, ACK number, flags) plus payload. UDP creates <b>datagrams</b>: no sequencing, no ACKs, no retransmission. If an ACK doesn’t arrive, TCP retransmits. Ports and sequence numbers here are <i>illustrative</i>.","TCP carries web pages, email and file transfers. UDP carries DNS lookups, video calls and games, where speed matters more than perfect delivery."]);
+function layer4(){stage="l4";curL=1;P.cur=3;prog();nxt=0;const X=600;
+ const f=B.MeshBuilder.CreateGround("f4",{width:40,height:40},sc);f.position.set(X,0,10);f.material=mat("#120c20","#1a0a38");
+ const w=B.MeshBuilder.CreateBox("w4",{width:40,height:12,depth:1},sc);w.position.set(X,6,24);w.material=mat("#1a1030","#2a1060");
+ const cv=B.MeshBuilder.CreateBox("cv4",{width:18,height:.4,depth:3},sc);cv.position.set(X,.2,6);cv.material=mat("#222","#38e1ff");
+ holo("SRC PORT 49152 → DST PORT 443 (illustrative)",9,.7,new B.Vector3(X,6,23.4),"#a56bff");
+ const ch=Math.ceil(msg.length/4),enc=new TextEncoder();let seq=1000;segs=[];
+ for(let k=0;k<msg.length;k+=ch){const t=msg.slice(k,k+ch),n=enc.encode(t).length;segs.push({t,seq,n});seq+=n}
+ const ord=segs.map((_,i)=>i).sort(()=>Math.random()-.5);
+ const gap=4,x0=X-(segs.length-1)*gap/2;
+ segs.forEach((s,j)=>{const slot=holo("SLOT "+(j+1),2.6,.5,new B.Vector3(x0+j*gap,.1,14),"#556");slot.rotation.x=Math.PI/2;slot.position.y=.05});
+ ord.forEach((i,j)=>{const b=B.MeshBuilder.CreateBox("seg",{width:2.6,height:1.2,depth:1.2},sc);b.position.set(x0+j*gap,1,6);b.material=mat("#0b2a44","#0a6a99");b.metadata={i};
+  [["SEQ "+segs[i].seq,.35,"#38e1ff"],["“"+segs[i].t+"”",-.15,"#fff"]].forEach(([tx,y,c])=>{const p=holo(tx,2.6,.5,B.Vector3.Zero(),c);p.parent=b;p.position.set(0,y+1,-.62);p.isPickable=false});segs[i].m=b});
+ cam.position.set(X,1.7,-6);cam.setTarget(new B.Vector3(X,2,14));
+ hint("LAYER 4 · TRANSPORT — a segmentation factory. Your message was cut into <b>TCP segments</b>, each with a header (SEQ) and payload. They arrived shuffled! Click them in the order the receiver should rebuild them. <button id='info'>EXPLAIN</button>");$("info").onclick=explain}
+sc.onPointerObservable.add(pi=>{if(pi.type!=B.PointerEventTypes.POINTERTAP||stage!="l4")return;const m=pi.pickInfo.pickedMesh;if(!m||!m.metadata||m.metadata.i===undefined||m.metadata.done)return;
+ if(m.metadata.i===nxt){m.metadata.done=1;beep(700);const gap=4,x0=600-(segs.length-1)*gap/2;m.position.set(x0+nxt*gap,1,14);m.material=mat("#0a3a22","#18c070");nxt++;if(nxt==segs.length)setTimeout(done4,600)}
+ else{beep(180,.4);hint("✗ Wrong order. The receiver rebuilds data by <b>sequence number</b>: lowest SEQ first. <button id='info'>EXPLAIN</button>");$("info").onclick=explain}});
+function done4(){hint();const last=segs[segs.length-1],ack=last.seq+last.n,lost=segs[Math.min(1,segs.length-1)];
+ panel(`<h1>MESSAGE REASSEMBLED</h1><p style="font-size:20px">“${segs.map(s=>s.t).join("")}”</p><p>The receiver replies with an <b>ACK ${ack}</b> meaning “I have everything up to byte ${ack-1}”.</p><button id="loss">SIMULATE A LOST SEGMENT</button>`);
+ $("loss").onclick=()=>{beep(150,.6);panel(`<h1>RELIABILITY</h1><p>Segment <b>SEQ ${lost.seq}</b> is lost in the network. The receiver never ACKs it, so after a timeout the sender <b>retransmits SEQ ${lost.seq}</b>. Then the receiver can ACK ${ack}. <small>(Illustrative timings.)</small></p><button id="q">KNOWLEDGE CHECK</button>`);$("q").onclick=quiz4}}
+function quiz4(){panel(`<h1>Knowledge check</h1><p>Which transport protocol uses sequence numbers, ACKs and retransmission?</p><button id="a1">UDP</button><button id="a2">TCP</button><p id="fb"></p>`);
+ $("a1").onclick=()=>{$("fb").textContent="UDP sends datagrams without those guarantees.";beep(180)};
+ $("a2").onclick=()=>{beep(880);P.done=[0,1,2,3];P.cur=-1;stage="end";prog();panel(`<h1>LAYER 4 COMPLETE ✓</h1><p>You turned a message into TCP segments and rebuilt it in order.</p><button id="cj">CONTINUE JOURNEY</button>`);$("cj").onclick=()=>{panel();fade(layer3)}}}
+// ---- LAYERS 6 & 5 ----
+EX.push(["The Presentation Layer prepares data so both sides understand it: character encoding, encryption and compression. Like translating, locking and shrinking a parcel.","Layer 6 covers data representation (e.g. UTF-8), encryption/decryption and compression/decompression. Important: encryption is performed by specific protocols and software (like TLS), not independently by OSI Layer 6 for every network message. The XOR demo is a toy, not real security.","UTF-8 is used on most of the web, TLS protects HTTPS traffic, gzip/brotli shrink web pages, JPEG and MP3 are compressed formats."]);
+EX.push(["The Session Layer is about conversations: starting one, keeping it going, and ending it politely.","Conceptually, Layer 5 handles session establishment, maintenance (keep-alives, checkpoints) and termination, identified by a session ID. Modern Internet protocols spread these functions across layers (TCP connections, TLS sessions, application tokens). The session ID shown is illustrative.","Website login sessions, TLS session resumption, remote procedure calls and remote-desktop sessions."]);
+const rm=(X,a,b)=>{const f=B.MeshBuilder.CreateGround("f",{width:36,height:40},sc);f.position.set(X,0,8);f.material=mat(a,b);const w=B.MeshBuilder.CreateBox("w",{width:36,height:12,depth:1},sc);w.position.set(X,6,24);w.material=mat("#0a1830","#102060")};
+let seen=[0,0,0],mcM=[],st5=0,beam,pu,piv,piv2;
+const hx=a=>[...a].map(b=>b.toString(16).padStart(2,"0")).join(" "),by=()=>new TextEncoder().encode(msg);
+const MC=[()=>`<h1>ENCODING</h1><p>Characters become numbers (bytes). “${msg}” in UTF-8:</p><p style="font-family:monospace;word-break:break-all;color:#7ff">${hx(by())}</p><p><small>ASCII letters take 1 byte each; other characters can take up to 4.</small></p>`,
+()=>`<h1>ENCRYPTION · toy demo</h1><p>Scramble each byte with a secret key (XOR 0x5A, <b>illustrative only</b>):</p><p style="font-family:monospace;word-break:break-all;color:#a56bff">${hx(by().map(b=>b^0x5a))}</p><p>Only a receiver with the key can reverse it. <small>In practice, protocols and software such as TLS do the encrypting; Layer 6 does not independently encrypt every message.</small></p>`,
+()=>`<h1>COMPRESSION · toy demo</h1><p>Repeated data can be stored shorter. Run-length example: <b>AAAAAABBB → 6A3B</b>.</p><p><small>Your short message is too small to benefit; real systems use gzip, brotli or media codecs.</small></p>`];
+function layer6(){stage="l6";curL=2;P.cur=1;prog();seen=[0,0,0];mcM=[];const X=900;rm(X,"#0a2018","#06402a");
+ holo("“"+msg+"”",5,1.2,new B.Vector3(X,5.5,23.3),"#a56bff");
+ ["ENCODING","ENCRYPTION","COMPRESSION"].forEach((n,i)=>{const m=B.MeshBuilder.CreateBox("mc",{width:3,height:3,depth:2},sc);m.position.set(X+(i-1)*8,1.5,12);m.material=mat("#101c30","#0c4a70");m.metadata={mc:i};const l=holo(n,3.4,.6,B.Vector3.Zero(),"#38e1ff");l.parent=m;l.position.set(0,2.3,-1.05);l.isPickable=false;mcM.push(m)});
+ cam.position.set(X,1.7,-6);cam.setTarget(new B.Vector3(X,2,14));
+ hint("LAYER 6 · PRESENTATION — a digital encoding laboratory. Your message enters the chamber. Click all <b>3 machines</b> to see what each does. <button id='info'>EXPLAIN</button>");$("info").onclick=explain}
+sc.onPointerObservable.add(pi=>{if(pi.type!=B.PointerEventTypes.POINTERTAP)return;const m=pi.pickInfo.pickedMesh;if(!m||!m.metadata)return;
+ if(stage=="l6"&&m.metadata.mc!==undefined){const i=m.metadata.mc;beep(600);panel(MC[i]()+`<button id="ok">GOT IT</button>`);$("ok").onclick=()=>{seen[i]=1;m.material=mat("#0a3a22","#18c070");panel();if(seen.every(Boolean))quiz6()}}
+ else if(stage=="l5"&&m.metadata.c)s5()});
+function quiz6(){hint();panel(`<h1>Knowledge check</h1><p>Does OSI Layer 6 independently encrypt every network message?</p><button id="a1">Yes, always</button><button id="a2">No — encryption is done by specific protocols/software (e.g. TLS)</button><p id="fb"></p>`);
+ $("a1").onclick=()=>{$("fb").textContent="Not quite: real encryption is performed by specific protocols and software.";beep(180)};
+ $("a2").onclick=()=>{beep(880);panel(`<h1>LAYER 6 COMPLETE ✓</h1><button id="cj">CONTINUE JOURNEY</button>`);$("cj").onclick=()=>{P.done=[0,1];panel();fade(layer5)}}}
+const s5t=["Click the <b>console</b> to ESTABLISH a session between Mumbai and Delhi.","Session ESTABLISHED. Click the console to MAINTAIN it (keep-alive pulses).","Session is alive. Click the console to TERMINATE it cleanly."];
+function s5hint(){hint("LAYER 5 · SESSION — a connection management station. "+s5t[st5]+" <button id='info'>EXPLAIN</button>");$("info").onclick=explain}
+function layer5(){stage="l5";curL=3;P.cur=2;prog();st5=0;const X=1200;rm(X,"#1a1408","#40300a");
+ [["MUMBAI",-9],["DELHI",9]].forEach(([n,x])=>{const t=B.MeshBuilder.CreateBox("t",{width:3,height:3,depth:2},sc);t.position.set(X+x,1.5,14);t.material=mat("#101c30","#0c4a70");const l=holo(n,3,.6,B.Vector3.Zero(),"#38e1ff");l.parent=t;l.position.set(0,2.3,-1.05);l.isPickable=false});
+ beam=B.MeshBuilder.CreateCylinder("bm",{height:12,diameter:.2},sc);beam.rotation.z=Math.PI/2;beam.position.set(X,1.5,14);beam.material=mat("#222","#111");
+ const c=B.MeshBuilder.CreateBox("con",{width:3,height:1.4,depth:1.2},sc);c.position.set(X,.7,8);c.material=mat("#201030","#6a2aa0");c.metadata={c:1};
+ const l=holo("SESSION CONSOLE",4,.6,B.Vector3.Zero(),"#a56bff");l.parent=c;l.position.set(0,1.3,-.65);l.isPickable=false;
+ cam.position.set(X,1.7,-6);cam.setTarget(new B.Vector3(X,2,14));s5hint()}
+function s5(){beep(500+st5*150);const X=1200;
+ if(st5==0){beam.material.emissiveColor=B.Color3.FromHexString("#38e1ff");piv=holo("SESSION ID: SES-4C7A (illustrative)",6,.6,new B.Vector3(X,3.2,14),"#38e1ff")}
+ else if(st5==1){pu=B.MeshBuilder.CreateSphere("pu",{diameter:.6},sc);pu.material=mat("#003","#ffffff");pu.position.set(X,1.5,14);let t=0;piv2=setInterval(()=>{t+=.03;pu.position.x=X-6+((t%1)*12)},30)}
+ else{clearInterval(piv2);pu.dispose();beam.material.emissiveColor=B.Color3.FromHexString("#111111");piv.dispose();return quiz5()}
+ st5++;s5hint()}
+function quiz5(){hint();panel(`<h1>Session ended ✓</h1><p>Establish → maintain → terminate. <small>Modern protocols spread these functions across layers (TCP, TLS, apps).</small></p><h3>Knowledge check</h3><p>Which job belongs to the Session Layer?</p><button id="a1">Splitting data into segments</button><button id="a2">Starting, maintaining and ending a conversation</button><button id="a3">Choosing IP routes</button><p id="fb"></p>`);
+ [1,3].forEach(n=>$("a"+n).onclick=()=>{$("fb").textContent="Not this one: that is another layer’s job.";beep(180)});
+ $("a2").onclick=()=>{beep(880);panel(`<h1>LAYER 5 COMPLETE ✓</h1><button id="cj">CONTINUE JOURNEY</button>`);$("cj").onclick=()=>{P.done=[0,1,2];panel();fade(layer4)}}}
+// ---- LAYERS 3,2,1 + RECEIVER ----
+EX.push(['The Network Layer gives every device an address (IP). Routers pass your packet along, one hop at a time, toward its destination, like each post office choosing the next truck.','IP packets carry source and destination IP addresses, TTL/Hop Limit (decremented at each router to stop loops), a protocol field and a checksum. Routers consult routing tables to pick the next hop by destination IP. IP is best-effort: delivery is not guaranteed and packets can take different paths. Addresses here are illustrative.','Home routers, ISP routers and backbone routers build routing tables with protocols like BGP and OSPF.']);
+EX.push(['The Data Link Layer wraps the packet in a frame for ONE hop (one link). MAC addresses say who receives it on that link.','An Ethernet frame holds destination MAC, source MAC, type/length, payload and an FCS trailer. Switches learn which MAC lives on which port (MAC address table). Framing is hop-by-hop: at each router a new frame with new MACs is built while the IP addresses stay. MACs here are illustrative.','Ethernet switches in offices and data centres, Wi-Fi access points, your laptop\u2019s network card.']);
+EX.push(['The Physical Layer is the actual wire, light or radio that carries the 0s and 1s.','Layer 1 transmits raw bits over a medium: voltage on copper, light pulses in fiber, radio waves in wireless. It covers signalling, cabling, connectors and equipment such as repeaters.','Fiber between cities, Cat6 cables in offices, Wi-Fi and 5G radios.']);
+EX.push(['The receiver unwraps the data in reverse. Each layer removes its own header and passes the rest upward.','Decapsulation: Physical (bits) \u2192 Data Link (check FCS and MAC, strip Ethernet) \u2192 Network (check IP, strip IP header) \u2192 Transport (ports, sequence, ACK, strip TCP header) \u2192 Session \u2192 Presentation (decode) \u2192 Application. Values are illustrative.','This happens in every device that receives data, each time you open a page or read a message.']);
+const ib=t=>{hint(t+' <button id=info>EXPLAIN</button>');$('info').onclick=explain};
+function qz(q,o,ok,lbl,next){hint();panel('<h1>Knowledge check</h1><p>'+q+'</p>'+o.map((t,i)=>'<button data-i='+i+'>'+t+'</button>').join('')+'<p id=fb></p>');
+ document.querySelectorAll('[data-i]').forEach(b=>b.onclick=()=>{if(+b.dataset.i!=ok){$('fb').textContent='Not quite, try again.';beep(180);return}beep(880);panel('<h1>'+lbl+' COMPLETE \u2713</h1><button id=cj>CONTINUE JOURNEY</button>');$('cj').onclick=()=>{panel();fade(next)}})}
+// L3
+const RN=[['Mumbai',-6,-6],['Ahmedabad',-8,0],['Jaipur',-3,5],['Bhopal',-1,-1],['Nagpur',2,-5],['Lucknow',5,6],['Delhi',1,10]];
+const RE=[[0,1,3],[0,3,2],[0,4,4],[1,2,3],[3,2,2,1],[3,5,4],[4,5,5],[2,6,2],[5,6,2]];
+let cur3=0,ttl=64,pk,busy3=false;
+const nb=n=>RE.filter(e=>e[0]==n||e[1]==n).map(e=>({to:e[0]==n?e[1]:e[0],c:e[2],f:e[3]}));
+function l3h(x){ib('LAYER 3 \u00b7 NETWORK \u2014 you are an <b>IP packet</b> at <b>'+RN[cur3][0]+'</b>. Header (illustrative): Src 198.51.100.7 \u2192 Dst 203.0.113.9 \u00b7 TTL '+ttl+'.<br>Routing table, next hops: '+nb(cur3).map(n=>RN[n.to][0]+' (cost '+n.c+(n.f?', LINK DOWN':'')+')').join(' \u00b7 ')+'<br>'+(x||'Click a neighbouring router to forward the packet toward Delhi.'))}
+function mv3(to,fn){const a=pk.position.clone(),b=new B.Vector3(1500+RN[to][1],1.6,RN[to][2]);let t=0;const iv=setInterval(()=>{t+=.05;pk.position=B.Vector3.Lerp(a,b,Math.min(t,1));if(t>=1){clearInterval(iv);fn()}},30)}
+function layer3(){stage='l3';curL=4;P.done=[0,1,2,3];P.cur=4;prog();cur3=0;ttl=64;busy3=false;const X=1500;
+ const mp=B.MeshBuilder.CreateBox('map',{width:26,height:.2,depth:30},sc);mp.position.set(X,-.1,2);mp.material=mat('#06101e','#08283f');mp.isPickable=false;
+ RN.forEach(([n,x,z],i)=>{const s=B.MeshBuilder.CreateSphere('r',{diameter:1.4},sc);s.position.set(X+x,.7,z);s.material=mat('#101c30',i==0?'#18c070':i==6?'#a56bff':'#0c6a99');s.metadata={r:i};const l=holo(n,3.6,.6,new B.Vector3(X+x,.3,z-1.6),'#38e1ff');l.rotation.x=Math.PI/2;l.isPickable=false});
+ RE.forEach(([a,b,c,f])=>{const t=B.MeshBuilder.CreateTube('e',{path:[new B.Vector3(X+RN[a][1],.5,RN[a][2]),new B.Vector3(X+RN[b][1],.5,RN[b][2])],radius:.08},sc);t.material=mat('#111',f?'#ff3355':'#38e1ff');t.isPickable=false});
+ pk=B.MeshBuilder.CreateSphere('pk',{diameter:.9},sc);pk.material=mat('#003','#ffffff');pk.position.set(X+RN[0][1],1.6,RN[0][2]);pk.isPickable=false;
+ cam.position.set(X,22,-22);cam.setTarget(new B.Vector3(X,0,2));l3h()}
+function done3(){qz('Delhi reached with TTL '+ttl+'. IP is best-effort and each router chose the next hop on its own. What do routers use to choose the next hop?',['Destination MAC address','Destination IP address','The message text'],1,'LAYER 3',layer2)}
+// L2
+const FR=[['DEST MAC','Who the frame is for on THIS link: 00:1A:2B:AA:00:02 (illustrative).'],['SOURCE MAC','The sender on this link: 00:1A:2B:AA:00:01 (illustrative).'],['TYPE','Says what is inside: 0x0800 means an IPv4 packet.'],['PAYLOAD','The Layer 3 packet: IP header + TCP segment + data.'],['FCS','Frame Check Sequence, a CRC so the receiver can detect corrupted frames.']];
+let ord2=0;
+function layer2(){stage='l2';curL=5;P.done=[0,1,2,3,4];P.cur=5;prog();ord2=0;const X=1800,g2=4.2,x0=X-2*g2;rm(X,'#081a14','#0a3a30');
+ FR.forEach((f,j)=>{const s=holo('SLOT '+(j+1),3,.5,new B.Vector3(x0+j*g2,.05,14),'#556');s.rotation.x=Math.PI/2;s.isPickable=false});
+ [0,1,2,3,4].sort(()=>Math.random()-.5).forEach((i,j)=>{const b=B.MeshBuilder.CreateBox('fr',{width:3.2,height:1.2,depth:1.2},sc);b.position.set(x0+j*g2,1,6);b.material=mat('#0b2a44','#0a6a99');b.metadata={fr:i};const l=holo(FR[i][0],3.2,.6,B.Vector3.Zero(),'#ffffff');l.parent=b;l.position.set(0,0,-.62);l.isPickable=false});
+ cam.position.set(X,1.7,-6);cam.setTarget(new B.Vector3(X,2,14));
+ ib('LAYER 2 \u00b7 DATA LINK \u2014 an Ethernet switching facility. The IP packet must be wrapped in a <b>frame</b>. Click the parts in the order they appear on the wire: DEST MAC, SOURCE MAC, TYPE, PAYLOAD, FCS.')}
+function done2(){hint();panel('<h1>FRAME ASSEMBLED \u2713</h1><p>A switch reads the <b>destination MAC</b> and looks it up in its MAC address table:</p><p style="font-family:monospace;font-size:13px">Port 1 \u2192 00:1A:2B:AA:00:01<br>Port 3 \u2192 00:1A:2B:AA:00:02 \u2190 forward here</p><p><small>Illustrative. At the next router this frame is discarded and a <b>new</b> frame with new MACs is built; the IP addresses stay the same (hop-by-hop).</small></p><button id=k>KNOWLEDGE CHECK</button>');$('k').onclick=()=>qz('When a router forwards a packet into the next network, what changes?',['Both IP and MAC addresses stay','MAC addresses change; IP addresses stay','IP addresses change; MAC addresses stay'],1,'LAYER 2',layer1)}
+// L1
+const PH=[['ELECTRICAL SIGNALING (copper Ethernet)','Bits are voltage changes on copper twisted-pair wires. Common inside buildings, limited to about 100 m per Ethernet segment and sensitive to electrical noise.'],['OPTICAL SIGNALING (fiber)','Bits are pulses of light in glass fiber: long distance, huge bandwidth, no electrical interference. Repeaters and amplifiers boost the signal on long links.'],['WIRELESS SIGNALING (radio)','Bits ride on radio waves (Wi-Fi, cellular). No cable needed, but the medium is shared and affected by distance, walls and interference.']];
+let seen1=[0,0,0],pls=[];
+function layer1(){stage='l1';curL=6;P.done=[0,1,2,3,4,5];P.cur=6;prog();seen1=[0,0,0];const X=2100;
+ const tn=B.MeshBuilder.CreateCylinder('tn',{height:130,diameter:9,tessellation:24},sc);tn.rotation.x=Math.PI/2;tn.position.set(X,1.7,50);const tm=mat('#050a20','#0a1a50');tm.backFaceCulling=false;tn.material=tm;tn.isPickable=false;
+ for(let z=-8;z<110;z+=10){const r=B.MeshBuilder.CreateTorus('ring',{diameter:8.8,thickness:.12,tessellation:32},sc);r.rotation.x=Math.PI/2;r.position.set(X,1.7,z);r.material=mat('#022','#38e1ff');r.isPickable=false}
+ pls=[];for(let i=0;i<46;i++){const p=B.MeshBuilder.CreateSphere('pl',{diameter:i%2?.35:.18},sc);p.material=mat(i%2?'#77ffff':'#112233',i%2?'#77ffff':'#0a2a40');p.position.set(X+(Math.random()-.5)*5,1.7+(Math.random()-.5)*5,Math.random()*120-10);p.isPickable=false;pls.push(p)}
+ [['ELECTRICAL',-2.4,20],['OPTICAL',2.4,45],['WIRELESS',-2.4,70]].forEach(([n,x,z],i)=>{const b=B.MeshBuilder.CreateBox('st',{width:1.2,height:1.4,depth:1.1},sc);b.position.set(X+x,1.2,z);b.material=mat('#101c30','#0c4a70');b.metadata={st:i};const l=holo(n,3.2,.6,B.Vector3.Zero(),'#38e1ff');l.parent=b;l.position.set(0,1.2,-.55);l.isPickable=false});
+ const gt=B.MeshBuilder.CreateTorus('gate',{diameter:8,thickness:.4,tessellation:32},sc);gt.rotation.x=Math.PI/2;gt.position.set(X,1.7,100);gt.material=mat('#222','#a56bff');gt.isPickable=false;holo('DELHI NETWORK',5,.8,new B.Vector3(X,6.4,99),'#a56bff');
+ cam.position.set(X,1.7,-6);cam.setTarget(new B.Vector3(X,1.7,20));
+ ib('LAYER 1 \u00b7 PHYSICAL \u2014 you are now a pulse of light in a fiber-optic tunnel carrying bits. Walk forward (WASD) and click the <b>3 stations</b> to learn the signal types, then reach the Delhi gate.')}
+sc.registerBeforeRender(()=>{if(stage!='l1')return;pls.forEach(p=>{p.position.z+=.35;if(p.position.z>112)p.position.z=-10});if(seen1.every(Boolean)&&cam.position.z>92){stage='l1q';qz('You reached the Delhi network. Which layer turns bits into electrical, optical or radio signals?',['Data Link','Physical','Transport'],1,'LAYER 1',receiver)}});
+// RECEIVER
+const NM=['PHYSICAL','DATA LINK','NETWORK','TRANSPORT','SESSION','PRESENTATION','APPLICATION'];
+const RS=()=>[['PHYSICAL','Signals become bits and the network card finds the frame.','[ETH HDR][IP HDR][TCP HDR][DATA][FCS]'],['DATA LINK','Checks the FCS and that the destination MAC is its own, then strips the Ethernet header and trailer.','[IP HDR][TCP HDR][DATA]'],['NETWORK','Checks the destination IP is its own and strips the IP header.','[TCP HDR][DATA]'],['TRANSPORT','Uses ports and sequence numbers to reorder segments, sends ACKs, strips the TCP header.','[DATA]'],['SESSION','Matches the data to the right ongoing conversation.','[DATA]'],['PRESENTATION','Decodes UTF-8 (and decrypts or decompresses if used).','[TEXT]'],['APPLICATION','The app shows the message.','\u201c'+msg+'\u201d']];
+let nrx=0,dp;
+function rxShow(t){if(dp)dp.dispose();dp=holo(t,9,.9,new B.Vector3(2400,9.3,11),'#a56bff')}
+function receiver(){stage='rx';curL=7;P.done=[0,1,2,3,4,5,6];P.cur=-1;prog();nrx=0;const X=2400;rm(X,'#10081a','#2a0a50');
+ NM.forEach((n,i)=>{const s=B.MeshBuilder.CreateBox('sl',{width:6,height:1,depth:2},sc);s.position.set(X,.6+i*1.15,12);s.material=mat('#101c30','#0c4a70');s.metadata={sl:i};const l=holo(n,5,.6,B.Vector3.Zero(),'#38e1ff');l.parent=s;l.position.set(0,0,-1.02);l.isPickable=false});
+ rxShow('[ETH HDR][IP HDR][TCP HDR][DATA][FCS]');cam.position.set(X,4.5,-8);cam.setTarget(new B.Vector3(X,5.5,12));
+ ib('RECEIVER \u00b7 DELHI \u2014 a receiving computer. Decapsulate from the bottom up: click <b>PHYSICAL</b> first, then each layer above it.')}
+function fin(){stage='end';hint();parts('1',new B.Vector3(2400,5,8),80,2,'#38e1ff');beep(880,1);panel('<h1>MISSION COMPLETE!</h1><p style="font-size:22px">\u201c'+msg+'\u201d</p><p>You have successfully travelled through all 7 OSI layers.</p><p><small>Mumbai \u2192 Delhi: encapsulated 7 \u2192 1, sent as bits, decapsulated 1 \u2192 7. All addresses and values were illustrative.</small></p>')}
+sc.onPointerObservable.add(pi=>{if(pi.type!=B.PointerEventTypes.POINTERTAP)return;const m=pi.pickInfo.pickedMesh,d=m&&m.metadata;if(!d)return;
+ if(stage=='l3'&&d.r!==undefined&&!busy3){const n=nb(cur3).find(e=>e.to==d.r);
+  if(!n){beep(180);return l3h('\u2717 Not directly connected. A router can only forward to a neighbour.')}
+  if(n.f){beep(180);return l3h('\u2717 That link is down. Routers pick another next hop; the path is not fixed in advance.')}
+  busy3=true;beep(600);ttl--;mv3(d.r,()=>{cur3=d.r;busy3=false;if(cur3==6)done3();else l3h()})}
+ else if(stage=='l2'&&d.fr!==undefined&&!d.done){const g2=4.2,x0=1800-2*g2;if(d.fr!==ord2){beep(180);return ib('\u2717 Wrong order. An Ethernet frame starts with the destination MAC and ends with the FCS trailer.')}
+  d.done=1;m.position.set(x0+ord2*g2,1,14);m.material=mat('#0a3a22','#18c070');beep(500+ord2*80);ib('<b>'+FR[d.fr][0]+'</b>: '+FR[d.fr][1]);ord2++;if(ord2==5)setTimeout(done2,1500)}
+ else if(stage=='l1'&&d.st!==undefined&&!d.done){beep(600);panel('<h1>'+PH[d.st][0]+'</h1><p>'+PH[d.st][1]+'</p><button id=ok>GOT IT</button>');$('ok').onclick=()=>{d.done=1;seen1[d.st]=1;m.material=mat('#0a3a22','#18c070');panel();ib(seen1.every(Boolean)?'All three signal types seen. Walk to the glowing <b>Delhi gate</b> at the end of the tunnel (WASD).':'Keep exploring: click the other stations.')}}
+ else if(stage=='rx'&&d.sl!==undefined&&!d.done){if(d.sl!==nrx){beep(180);return ib('\u2717 Decapsulation works bottom-up. Next: <b>'+NM[nrx]+'</b>.')}
+  d.done=1;m.material=mat('#0a3a22','#18c070');beep(500+nrx*60);const r=RS()[nrx];rxShow(r[2]);nrx++;if(nrx==7)return setTimeout(fin,1200);ib('<b>'+r[0]+'</b>: '+r[1]+' Next: <b>'+NM[nrx]+'</b>.')}});
+// ---- loop ----
+eng.runRenderLoop(()=>{
+ // The original game moves the desktop camera between separate room coordinates.
+ // Apply that room change to the XR camera only when the stage changes; never overwrite
+ // headset tracking every frame.
+ if(xrInSession&&xrMode==="vr"&&xrExperience&&xrExperience.baseExperience&&stage!==lastXRStage){
+  const xcam=xrExperience.baseExperience.camera;
+  if(xcam&&xcam.position)xcam.position.copyFrom(cam.position);
+  lastXRStage=stage;
+ }
+ if((mvF||mvS)&&cam.inputs.attachedToElement!==false){
+ const forward=cam.getDirection(B.Vector3.Forward());forward.y=0;forward.normalize();
+ const right=new B.Vector3(forward.z,0,-forward.x);
+ cam.position.addInPlace(forward.scale(.15*mvF));cam.position.addInPlace(right.scale(.15*mvS));
+ }
+ portal.rotation.z+=.01;const show=stage=="cave"&&near(term,5);$("act").style.display=show?"block":"none";if(show&&$("hint").style.display=="block")hint("Terminal in range — press <b>E</b>");
+ if(!xrInSession&&["cave","l7","l4","l5","l6","l2","l1"].includes(stage)){cam.position.y=1.7}
+ sc.render()});
+addEventListener("resize",()=>eng.resize());
+// Keep the 3D canvas responsive when a phone rotates or browser chrome changes size.
+if(window.visualViewport)visualViewport.addEventListener("resize",()=>eng.resize());
+</script></body></html>
